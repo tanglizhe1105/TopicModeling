@@ -1,3 +1,8 @@
+#LDAExample
+Online LDA的实现，数据并行使用RDD分布式化，模型没有并行
+#HDPExample
+Online HDP的实现，数据和模型都没有分布式化
+
 # Topic Modeling on Apache Spark
 This package contains a set of distributed text modeling algorithms implemented on Spark, including:
 
