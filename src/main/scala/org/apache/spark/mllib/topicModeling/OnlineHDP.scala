@@ -60,14 +60,14 @@ object OnlineHDPOptimizer extends Serializable {
     Elogsticks(0 until n - 1) := ElogW(0 until n - 1)
     val cs = accumulate(Elog1_W)
 
-    Elogsticks(1 to n - 1) := Elogsticks(1 to n - 1) + cs
+    Elogsticks(1 until n) := Elogsticks(1 until n) + cs
     Elogsticks
   }
 
   /**
-   * For theta ~ Dir(alpha), computes E[log(theta)] given alpha. Currently the implementation
-   * uses digamma which is accurate but expensive.
-   */
+    * For theta ~ Dir(alpha), computes E[log(theta)] given alpha. Currently the implementation
+    * uses digamma which is accurate but expensive.
+    */
   private def dirichletExpectation(alpha: BDM[Double]): BDM[Double] = {
     val rowSum = sum(alpha(breeze.linalg.*, ::))
     val digAlpha = digamma(alpha)
@@ -79,65 +79,53 @@ object OnlineHDPOptimizer extends Serializable {
 }
 
 /**
- * Implemented based on the paper "Online Variational Inference for the Hierarchical Dirichlet Process" (Chong Wang, John Paisley and David M. Blei)
- */
+  * Implemented based on the paper "Online Variational Inference for the Hierarchical Dirichlet Process" (Chong Wang, John Paisley and David M. Blei)
+  */
 
 class OnlineHDPOptimizer(
-                          val corpus: RDD[(Long, Vector)],
-                          val chunkSize: Int = 256,
-                          val m_kappa: Double = 1.0,
-                          var m_tau: Double = 64.0,
+                          var m_D: Long = 0,
+                          val m_windowSize: Int = 256,
+                          val m_W: Int = 0,
                           val m_K: Int = 15,
                           val m_T: Int = 150,
+                          val m_kappa: Double = 1.0,
+                          var m_tau: Double = 64.0,
                           val m_alpha: Double = 1,
                           val m_gamma: Double = 1,
                           val m_eta: Double = 0.01,
                           val m_scale: Double = 1.0,
-                          val m_var_converge: Double = 0.0001,
-                          val iterations: Int = 10
-                          ) extends Serializable {
+                          val m_var_converge: Double = 0.0001
+                        ) extends Serializable {
 
 
-  val lda_alpha: Double = 1D
-  val lda_beta: Double = 1D
-  val m_W: Int = corpus.first()._2.size
-  var m_D: Double = corpus.count().toDouble
-
-  val m_var_sticks = BDM.zeros[Double](2, m_T - 1) // 2 * T - 1
+  val lda_alpha: Double = 0.1D
+  val lda_beta: Double = 0.01D
+  val m_var_sticks = BDM.zeros[Double](2, m_T - 1)
+  // 2 * T - 1
+  // T * W
+  val m_lambda: BDM[Double] = BDM.rand(m_T, m_W) :* ((m_D.toDouble) * 100.0 / (m_T * m_W).toDouble) - m_eta
   m_var_sticks(0, ::) := 1.0
   m_var_sticks(1, ::) := new BDV[Double]((m_T - 1 to 1 by -1).map(_.toDouble).toArray).t
-  var m_varphi_ss: BDV[Double] = BDV.zeros[Double](m_T) // T
-
-  // T * W
-  val m_lambda: BDM[Double] = BDM.rand(m_T, m_W) * (m_D.toDouble) * 100.0 / (m_T * m_W).toDouble - m_eta
-
   // T * W
   val m_Elogbeta = OnlineHDPOptimizer.dirichletExpectation(m_lambda + m_eta)
-
-  m_tau = m_tau + 1
-  var m_updatect = 0
-  var m_status_up_to_date = true
-
   val m_timestamp: BDV[Int] = BDV.zeros[Int](m_W)
   val m_r = collection.mutable.MutableList[Double](0)
-  var m_lambda_sum = sum(m_lambda(*, ::)) // row sum
 
+  m_tau = m_tau + 1
   val rhot_bound = 0.0
-
-
-  def update(docs: RDD[(Long, Vector)]): Unit = {
-    for (i <- 1 to iterations) {
-      val chunk = docs
-      update_chunk(chunk)
-    }
-  }
+  var m_varphi_ss: BDV[Double] = BDV.zeros[Double](m_T)
+  // T
+  var m_updatect = 0
+  var m_status_up_to_date = true
+  var m_lambda_sum = sum(m_lambda(*, ::)) // row sum
 
 
   def update_chunk(chunk: RDD[(Long, Vector)], update: Boolean = true): (Double, Int) = {
     // Find the unique words in this chunk...
     val unique_words = scala.collection.mutable.Map[Int, Int]()
     val raw_word_list = ArrayBuffer[Int]()
-    chunk.collect().foreach(doc => {
+    val chunkArray = chunk.collect()
+    chunkArray.foreach(doc => {
       doc._2.foreachActive { case (id, count) =>
         if (count > 0 && !unique_words.contains(id)) {
           unique_words += (id -> unique_words.size)
@@ -166,29 +154,31 @@ class OnlineHDPOptimizer(
     for (row <- 0 until wordsMatrix.rows) {
       wordsMatrix(row, ::) := (wordsMatrix(row, ::).t :* exprw).t
     }
-    m_lambda(::, word_list) := wordsMatrix
-
+/*    m_lambda(::, word_list) := wordsMatrix
     for (id <- word_list) {
       m_Elogbeta(::, id) := digamma(m_lambda(::, id) + m_eta) - digamma(m_lambda_sum + m_W * m_eta)
+    }*/
+    val Elogbeta = wordsMatrix.copy
+    for (i <- word_list.indices) {
+      Elogbeta(::, i) := digamma(wordsMatrix(::, i) + m_eta) - digamma(m_lambda_sum + m_W * m_eta)
     }
 
-    val ss = new SuffStats(m_T, Wt, chunk.count().toInt)
+    val ss = new SuffStats(m_T, Wt, chunkArray.length)
 
     val Elogsticks_1st: BDV[Double] = OnlineHDPOptimizer.expect_log_sticks(m_var_sticks) // global sticks
 
     // run variational inference on some new docs
     var score = 0.0
     var count = 0D
-    chunk.collect().foreach(doc =>
+    chunkArray.foreach(doc =>
       if (doc._2.size > 0) {
         val doc_word_ids = doc._2.asInstanceOf[SparseVector].indices
         val doc_word_counts = doc._2.asInstanceOf[SparseVector].values
         val dict = unique_words.toMap
         val wl = doc_word_ids.toList
 
-        val doc_score = doc_e_step(doc, ss, Elogsticks_1st,
-          word_list, dict, wl,
-          new BDV[Double](doc_word_counts), m_var_converge)
+        val doc_score = doc_e_step(doc, ss, Elogbeta, Elogsticks_1st,
+          word_list, dict, wl, new BDV[Double](doc_word_counts), m_var_converge)
         count += sum(doc_word_counts)
         score += doc_score
       }
@@ -211,8 +201,8 @@ class OnlineHDPOptimizer(
 
     // Update appropriate columns of lambda based on documents.
     // T * Wt                    T * Wt                                      T * Wt
-    m_lambda(::, word_list) := (m_lambda(::, word_list).toDenseMatrix * (1 - rhot)) + sstats.m_var_beta_ss * rhot * m_D / sstats.m_chunksize.toDouble
-    m_lambda_sum = (1 - rhot) * m_lambda_sum + sum(sstats.m_var_beta_ss(*, ::)) * rhot * m_D / sstats.m_chunksize.toDouble
+    m_lambda(::, word_list) := (m_lambda(::, word_list).toDenseMatrix * (1 - rhot)) + sstats.m_var_beta_ss * (rhot * m_D / m_windowSize)
+    m_lambda_sum = (1 - rhot) * m_lambda_sum + sum(sstats.m_var_beta_ss(*, ::)) * (rhot * m_D / sstats.m_chunksize)
 
     m_updatect += 1
     m_timestamp(word_list) := m_updatect
@@ -223,7 +213,7 @@ class OnlineHDPOptimizer(
     // update top level sticks
     // 2 * T - 1
     m_var_sticks(0, ::) := (m_varphi_ss(0 to m_T - 2) + 1.0).t
-    val var_phi_sum = flipud(m_varphi_ss(1 to m_varphi_ss.length - 1)) // T - 1
+    val var_phi_sum = flipud(m_varphi_ss(1 until m_varphi_ss.length)) // T - 1
     m_var_sticks(1, ::) := (flipud(accumulate(var_phi_sum)) + m_gamma).t
 
   }
@@ -231,6 +221,7 @@ class OnlineHDPOptimizer(
 
   def doc_e_step(doc: (Long, Vector),
                  ss: SuffStats,
+                 Elogbeta: BDM[Double],
                  Elogsticks_1st: BDV[Double],
                  word_list: List[Int],
                  unique_words: Map[Int, Int],
@@ -240,7 +231,8 @@ class OnlineHDPOptimizer(
 
     val chunkids = doc_word_ids.map(id => unique_words(id))
 
-    val Elogbeta_doc: BDM[Double] = m_Elogbeta(::, doc_word_ids).toDenseMatrix // T * Wt
+    //val Elogbeta_doc: BDM[Double] = m_Elogbeta(::, doc_word_ids).toDenseMatrix // T * Wt
+    val Elogbeta_doc: BDM[Double] = Elogbeta(::, chunkids).toDenseMatrix // T * Wt
     // very similar to the hdp equations, 2 * K - 1
     val v = BDM.zeros[Double](2, m_K - 1)
     v(0, ::) := 1.0
@@ -253,22 +245,22 @@ class OnlineHDPOptimizer(
 
     var likelihood = 0.0
     var old_likelihood = -1e200
-    val converge = 1.0
+    var converge = 1.0
     val eps = 1e-100
 
     var iter = 0
     val max_iter = 100
 
-    var var_phi_out: BDM[Double] = BDM.ones[Double](1, 1)
+    var var_phi_out: BDM[Double] = null
 
     // not yet support second level optimization yet, to be done in the future
-    while (iter < max_iter && (converge < 0.0 || converge > var_converge)) {
+    while (iter < max_iter && converge > var_converge) {
 
-      // var_phi
+      // var_phi (18)
       val (log_var_phi: BDM[Double], var_phi: BDM[Double]) =
         if (iter < 3) {
           val element = Elogbeta_doc.copy // T * Wt
-          for (i <- 0 to element.rows - 1) {
+          for (i <- 0 until element.rows) {
             element(i, ::) := (element(i, ::).t :* doc_word_counts).t
           }
           var var_phi: BDM[Double] = phi.t * element.t // K * Wt   *  Wt * T  => K * T
@@ -278,7 +270,7 @@ class OnlineHDPOptimizer(
         }
         else {
           val element = Elogbeta_doc.copy
-          for (i <- 0 to element.rows - 1) {
+          for (i <- 0 until element.rows) {
             element(i, ::) := (element(i, ::).t :* doc_word_counts).t
           }
           val product: BDM[Double] = phi.t * element.t
@@ -293,7 +285,7 @@ class OnlineHDPOptimizer(
         }
 
       val (log_phi, log_norm) =
-      // phi
+      // phi (17)
         if (iter < 3) {
           phi = (var_phi * Elogbeta_doc).t
           val (log_phi, log_norm) = OnlineHDPOptimizer.log_normalize(phi)
@@ -316,7 +308,7 @@ class OnlineHDPOptimizer(
       // v
       val phi_all = phi.copy
       for (i <- 0 until phi_all.cols) {
-        phi_all(::, i) := (phi_all(::, i)) :* doc_word_counts
+        phi_all(::, i) := phi_all(::, i) :* doc_word_counts
       }
 
       v(0, ::) := sum(phi_all(::, m_K - 1)) + 1.0
@@ -331,7 +323,7 @@ class OnlineHDPOptimizer(
       // var_phi part/ C in john's notation
 
       val diff = log_var_phi.copy
-      for (i <- 0 to diff.rows - 1) {
+      for (i <- 0 until diff.rows) {
         diff(i, ::) := (Elogsticks_1st :- diff(i, ::).t).t
       }
 
@@ -340,7 +332,7 @@ class OnlineHDPOptimizer(
       // v part/ v in john's notation, john's beta is alpha here
       val log_alpha = log(m_alpha)
       likelihood += (m_K - 1) * log_alpha
-      val dig_sum = (digamma(sum(v(::, *)))).toDenseVector
+      val dig_sum = digamma(sum(v(::, *))).toDenseVector
       val vCopy = v.copy
       for (i <- 0 until v.cols) {
         vCopy(::, i) := BDV[Double](1.0, m_alpha) - vCopy(::, i)
@@ -369,7 +361,7 @@ class OnlineHDPOptimizer(
 
       likelihood += sum(phi.t :* (var_phi * Elogbeta_docCopy))
 
-      val converge = (likelihood - old_likelihood) / abs(old_likelihood)
+      converge = (likelihood - old_likelihood) / abs(old_likelihood)
       old_likelihood = likelihood
 
       if (converge < -0.000001)
@@ -384,17 +376,29 @@ class OnlineHDPOptimizer(
     val sumPhiOut = sum(var_phi_out(::, *))
     ss.m_var_sticks_ss += sumPhiOut.toDenseVector
 
-    val phiCopy = phi.copy.t
-    for (i <- 0 until phi.rows) {
-      phiCopy(i, ::) := (phiCopy(i, ::).t :* doc_word_counts).t
+    /*    val phiCopy = phi.copy.t
+        for (i <- 0 until phi.rows) {
+          phiCopy(i, ::) := (phiCopy(i, ::).t :* doc_word_counts).t
+        }*/
+    for (i <- 0 until phi.cols) {
+      phi(::, i) :*= doc_word_counts
     }
 
-    val middleResult: BDM[Double] = var_phi_out.t * phiCopy
-    for (i <- 0 until chunkids.size) {
-      ss.m_var_beta_ss(::, chunkids(i)) := ss.m_var_beta_ss(::, chunkids(i)) + middleResult(::, i)
+    val middleResult: BDM[Double] = var_phi_out.t * phi.t // T K * K * W => T * W
+    for (i <- chunkids.indices) {
+      ss.m_var_beta_ss(::, chunkids(i)) :+= middleResult(::, i)
     }
 
-    return likelihood
+    likelihood
   }
 
+  def topicPerplexity(): Double = {
+    // E[log p(beta | eta) - log q (beta | lambda)]; assumes eta is a scalar
+    var topicScore = 0D
+    val sumEta = m_eta * m_W
+    topicScore += sum((m_eta - m_lambda) :* m_Elogbeta)
+    topicScore += sum(lgamma(m_lambda) - lgamma(m_eta))
+    topicScore += sum(lgamma(sumEta) - lgamma(sum(m_lambda(::, breeze.linalg.*))))
+    topicScore
+  }
 }

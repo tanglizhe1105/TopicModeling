@@ -254,6 +254,7 @@ class LDA private (
       var batch = documents.filter(x => x._1>= begin && x._1 < end)
       batch = batch.partitionBy(new HashPartitioner(partition))
       batch.cache()
+      batch.count()
 
       var iter = 0
       val iterationTimes = Array.fill[Double](maxIterations)(0)
