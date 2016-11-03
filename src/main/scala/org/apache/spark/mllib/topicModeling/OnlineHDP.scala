@@ -152,7 +152,7 @@ class OnlineHDPOptimizer(
 
     val wordsMatrix = m_lambda(::, word_list).toDenseMatrix
     for (row <- 0 until wordsMatrix.rows) {
-      wordsMatrix(row, ::) := (wordsMatrix(row, ::).t :* exprw).t
+      wordsMatrix(row, ::) :*= exprw.t
     }
 /*    m_lambda(::, word_list) := wordsMatrix
     for (id <- word_list) {
@@ -256,12 +256,12 @@ class OnlineHDPOptimizer(
     // not yet support second level optimization yet, to be done in the future
     while (iter < max_iter && converge > var_converge) {
 
-      // var_phi (18)
+      // var_phi
       val (log_var_phi: BDM[Double], var_phi: BDM[Double]) =
         if (iter < 3) {
           val element = Elogbeta_doc.copy // T * Wt
           for (i <- 0 until element.rows) {
-            element(i, ::) := (element(i, ::).t :* doc_word_counts).t
+            element(i, ::) :*= doc_word_counts.t
           }
           var var_phi: BDM[Double] = phi.t * element.t // K * Wt   *  Wt * T  => K * T
           val (log_var_phi, log_norm) = OnlineHDPOptimizer.log_normalize(var_phi)
@@ -271,11 +271,11 @@ class OnlineHDPOptimizer(
         else {
           val element = Elogbeta_doc.copy
           for (i <- 0 until element.rows) {
-            element(i, ::) := (element(i, ::).t :* doc_word_counts).t
+            element(i, ::) :*= doc_word_counts.t
           }
           val product: BDM[Double] = phi.t * element.t
           for (i <- 0 until product.rows) {
-            product(i, ::) := (product(i, ::).t + Elogsticks_1st).t
+            product(i, ::) :+= Elogsticks_1st.t
           }
 
           var var_phi: BDM[Double] = product
@@ -285,7 +285,7 @@ class OnlineHDPOptimizer(
         }
 
       val (log_phi, log_norm) =
-      // phi (17)
+      // phi
         if (iter < 3) {
           phi = (var_phi * Elogbeta_doc).t
           val (log_phi, log_norm) = OnlineHDPOptimizer.log_normalize(phi)
@@ -296,7 +296,7 @@ class OnlineHDPOptimizer(
           //     K * T       T * Wt
           val product: BDM[Double] = (var_phi * Elogbeta_doc).t
           for (i <- 0 until product.rows) {
-            product(i, ::) := (product(i, ::).t + Elogsticks_2nd).t
+            product(i, ::) :+= Elogsticks_2nd.t
           }
           phi = product
           val (log_phi, log_norm) = OnlineHDPOptimizer.log_normalize(phi)
@@ -324,7 +324,7 @@ class OnlineHDPOptimizer(
 
       val diff = log_var_phi.copy
       for (i <- 0 until diff.rows) {
-        diff(i, ::) := (Elogsticks_1st :- diff(i, ::).t).t
+        diff(i, ::) := (Elogsticks_1st.t :- diff(i, ::))
       }
 
       likelihood += sum(diff :* var_phi)
@@ -349,14 +349,14 @@ class OnlineHDPOptimizer(
       // Z part
       val log_phiCopy = log_phi.copy
       for (i <- 0 until log_phiCopy.rows) {
-        log_phiCopy(i, ::) := (Elogsticks_2nd - log_phiCopy(i, ::).t).t
+        log_phiCopy(i, ::) := (Elogsticks_2nd.t - log_phiCopy(i, ::))
       }
       likelihood += sum(log_phiCopy :* phi)
 
       // X part, the data part
       val Elogbeta_docCopy = Elogbeta_doc.copy
       for (i <- 0 until Elogbeta_docCopy.rows) {
-        Elogbeta_docCopy(i, ::) := (Elogbeta_docCopy(i, ::).t :* doc_word_counts).t
+        Elogbeta_docCopy(i, ::) :*= doc_word_counts.t
       }
 
       likelihood += sum(phi.t :* (var_phi * Elogbeta_docCopy))
@@ -376,10 +376,6 @@ class OnlineHDPOptimizer(
     val sumPhiOut = sum(var_phi_out(::, *))
     ss.m_var_sticks_ss += sumPhiOut.toDenseVector
 
-    /*    val phiCopy = phi.copy.t
-        for (i <- 0 until phi.rows) {
-          phiCopy(i, ::) := (phiCopy(i, ::).t :* doc_word_counts).t
-        }*/
     for (i <- 0 until phi.cols) {
       phi(::, i) :*= doc_word_counts
     }

@@ -266,7 +266,10 @@ class LDA private (
         val elapsedSeconds = (System.nanoTime() - start) / 1e9
         iterationTimes(iter) = elapsedSeconds
 
-        val perplexity = state.perplexity(batch, gammaArray)
+        var perplexity = (0.0, 0.0)
+        if(iter % 5 ==0){
+          perplexity = state.perplexity(batch, gammaArray)
+        }
         iterationPer(iter) = perplexity
         iter += 1
       }

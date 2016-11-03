@@ -162,6 +162,8 @@ object LDAExample {
     val conf = new SparkConf()
       .setAppName(s"LDAExample with $params")
       .set("spark.locality.wait", "0s")
+      .set("spark.memory.fraction", "0.5")
+      .set("spark.memory.storageFraction", "0.5")
     val sc = new SparkContext(conf)
 
     val logLevel = Level.toLevel(params.logLevel, Level.INFO)
@@ -294,6 +296,8 @@ object HDPExample {
     val conf = new SparkConf()
       .setAppName(s"HDPExample with $params")
       .set("spark.locality.wait", "0s")
+      .set("spark.memory.fraction", "0.5")
+      .set("spark.memory.storageFraction", "0.5")
     val sc = new SparkContext(conf)
 
     val logLevel = Level.toLevel(params.logLevel, Level.INFO)
@@ -349,7 +353,9 @@ object HDPExample {
         iterationTimes(iter) = elapsedSeconds
 
         var topicScore = 0D
-        topicScore= state.topicPerplexity()
+        if(iter % 5 == 0){
+          topicScore= state.topicPerplexity()
+        }
         iterationPer(iter) = (docScore, topicScore)
         iter += 1
       }
